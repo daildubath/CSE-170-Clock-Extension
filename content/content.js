@@ -4,8 +4,10 @@
 // Dependencies: activity-tracker.js, inactivity-monitor.js, website-monitor.js, ui-manager.js
 //
 // Reads from chrome.storage.sync:
-//   isSessionActive {boolean}  — whether a focus session is currently running
-//   allowedSites    {string[]} — hostnames the user is allowed to visit (e.g. ["google.com", "docs.google.com"])
+//   isSessionActive    {boolean}  — whether a focus session is currently running
+//   allowedSites       {string[]} — hostnames the user is allowed to visit
+//   inactivityEnabled  {boolean}  — whether inactivity alerts are on
+//   inactivityTimeout  {number}   — minutes before inactivity alert fires
 
 let isSessionActive = false;
 let activityTracker = null;
@@ -36,7 +38,6 @@ function initializeModules() {
 // ---------------------------------------------------------------------------
 
 function onInactivityTriggered() {
-  // Show inactivity warning banner after 10 minutes of no activity
   uiManager.showInactivityBanner(() => onDismissInactivityBanner());
 }
 
@@ -50,8 +51,6 @@ function onInactivityReset() {
 }
 
 function onUserActivity() {
-  // User moved mouse, typed, scrolled, etc.
-  // Reset the inactivity timer
   if (inactivityMonitor) {
     inactivityMonitor.reset();
   }
@@ -61,13 +60,12 @@ function onUserActivity() {
 // Site Monitoring
 // ---------------------------------------------------------------------------
 
-function startMonitoring(allowedSites) {
-  // Check if current site is allowed
+function startMonitoring(allowedSites, inactivityEnabled, inactivityTimeout) {
   if (!websiteMonitor.isSiteAllowed(allowedSites)) {
     uiManager.showBlockedSiteWarning();
   }
 
-  // Start tracking activity and inactivity
+  inactivityMonitor.configure(inactivityEnabled, inactivityTimeout);
   activityTracker.start();
   inactivityMonitor.start();
 }
@@ -91,15 +89,22 @@ chrome.storage.onChanged.addListener((changes, area) => {
     isSessionActive = !!changes.isSessionActive.newValue;
 
     if (isSessionActive && !wasActive) {
-      chrome.storage.sync.get(['allowedSites'], (data) => {
-        startMonitoring(data.allowedSites || []);
-      });
+      chrome.storage.sync.get(
+        ['allowedSites', 'inactivityEnabled', 'inactivityTimeout'],
+        (data) => {
+          startMonitoring(
+            data.allowedSites || [],
+            data.inactivityEnabled !== false,
+            data.inactivityTimeout || 10
+          );
+        }
+      );
     } else if (!isSessionActive && wasActive) {
       stopMonitoring();
     }
   }
 
-  // Allowed-sites list updated while a session is running
+  // Allowed-sites list updated while session is running
   if (changes.allowedSites !== undefined && isSessionActive) {
     const updatedList = changes.allowedSites.newValue || [];
     if (!websiteMonitor.isSiteAllowed(updatedList)) {
@@ -107,6 +112,14 @@ chrome.storage.onChanged.addListener((changes, area) => {
     } else {
       uiManager.removeBlockedOverlay();
     }
+  }
+
+  // Inactivity settings changed while session is running
+  if ((changes.inactivityEnabled !== undefined || changes.inactivityTimeout !== undefined) && isSessionActive) {
+    chrome.storage.sync.get(['inactivityEnabled', 'inactivityTimeout'], (data) => {
+      inactivityMonitor.configure(data.inactivityEnabled !== false, data.inactivityTimeout || 10);
+      inactivityMonitor.reset();
+    });
   }
 });
 
@@ -117,12 +130,18 @@ chrome.storage.onChanged.addListener((changes, area) => {
 function initSession() {
   initializeModules();
 
-  chrome.storage.sync.get(['isSessionActive', 'allowedSites'], (data) => {
-    isSessionActive = !!data.isSessionActive;
-    if (!isSessionActive) return;
-    startMonitoring(data.allowedSites || []);
-  });
+  chrome.storage.sync.get(
+    ['isSessionActive', 'allowedSites', 'inactivityEnabled', 'inactivityTimeout'],
+    (data) => {
+      isSessionActive = !!data.isSessionActive;
+      if (!isSessionActive) return;
+      startMonitoring(
+        data.allowedSites || [],
+        data.inactivityEnabled !== false,
+        data.inactivityTimeout || 10
+      );
+    }
+  );
 }
 
-// Start on page load
 initSession();
